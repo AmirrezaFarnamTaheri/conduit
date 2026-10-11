@@ -1,10 +1,12 @@
 use conduit_scope::{Event, EventLog, Savings};
 use conduit_store::BlobStore;
 use conduit_lens::distill;
+use conduit_atlas::Snapshot;
+use conduit_edit::{apply, Operation};
 use std::{env, fs, path::PathBuf, process};
 
 fn usage() -> ! {
-    eprintln!("usage: conduit <run|store|expand|record|replay|stats|bench> ...");
+    eprintln!("usage: conduit <run|find|edit|store|expand|record|replay|stats|bench> ...");
     process::exit(2);
 }
 
@@ -39,6 +41,22 @@ fn main() {
                 Err(_) => print!("{}", raw_text),
             }
             std::process::exit(output.status.code().unwrap_or(1));
+        }
+        Some("find") => {
+            let query = args.next().unwrap_or_else(|| usage());
+            let limit = args.next().and_then(|value| value.parse().ok()).unwrap_or(20);
+            let workspace = env::var_os("CONDUIT_WORKSPACE").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            let snapshot = Snapshot::build(workspace).unwrap_or_else(|e| fail(e));
+            for hit in snapshot.search(&query, limit) { println!("{}:{}:{} [{}]", hit.path.display(), hit.line, hit.text, hit.hash); }
+        }
+        Some("edit") => {
+            let path = PathBuf::from(args.next().unwrap_or_else(|| usage()));
+            let expected_hash = args.next().unwrap_or_else(|| usage());
+            let old = args.next().unwrap_or_else(|| usage());
+            let new = args.next().unwrap_or_else(|| usage());
+            let workspace = env::var_os("CONDUIT_WORKSPACE").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            let applied = apply(workspace, &[Operation::SearchReplace { path, expected_hash, old, new }]).unwrap_or_else(|e| fail(e));
+            for item in applied { println!("{} {}", item.path.display(), item.hash); }
         }
         Some("store") => {
             let text = args.next().unwrap_or_else(|| usage());
