@@ -1,6 +1,6 @@
 # Conduit Phase 0
 
-This repository contains executable vertical slices for Conduit Phases 0 through 4. Phase 3 provides the ledger and hard budget primitives; Phase 4 provides loop detection, impacted-test planning, and command policy as reusable crates.
+This repository contains executable vertical slices for Conduit Phases 0 through 6. Phase 3 provides the ledger and hard budget primitives; Phase 4 provides loop detection, impacted-test planning, and command policy. Phase 5 provides provenance-bound memory and deterministic parallel fanout. Phase 6 provides threat-model, dependency-policy, CI, and release-gate inputs.
 
 ## Run the local benchmark
 
