@@ -102,6 +102,15 @@ fn no_extra_args(args: &mut impl Iterator<Item = String>) {
     if args.next().is_some() { usage(); }
 }
 
+fn read_store_input(input: impl Read, max_bytes: u64) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    input.take(max_bytes + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "store input exceeds 64 MiB"));
+    }
+    Ok(bytes)
+}
+
 fn run_command(args: impl Iterator<Item = String>) -> ! {
     let (config, program, program_args) = parse_run(args);
     let result = run::run(&program, &program_args, RunOptions {
@@ -233,10 +242,8 @@ fn main() {
             let argument = args.next().unwrap_or_else(|| usage());
             no_extra_args(&mut args);
             let bytes = if argument == "-" {
-                let mut bytes = Vec::new();
-                io::stdin().lock().take(64 * 1024 * 1024 + 1).read_to_end(&mut bytes)
-                    .unwrap_or_else(|error| fail(error));
-                bytes
+                read_store_input(io::stdin().lock(), 64 * 1024 * 1024)
+                    .unwrap_or_else(|error| fail(error))
             } else {
                 argument.into_bytes()
             };
@@ -363,6 +370,12 @@ mod tests {
             assert_eq!(command, "echo");
             assert!(remaining.is_empty());
         }
+    }
+
+    #[test]
+    fn store_stdin_rejects_overflow_instead_of_persisting_truncated_bytes() {
+        assert_eq!(read_store_input(&b"abcd"[..], 4).unwrap(), b"abcd");
+        assert_eq!(read_store_input(&b"abcde"[..], 4).unwrap_err().kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]

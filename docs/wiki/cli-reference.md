@@ -2,7 +2,7 @@
 
 ## `run [--preset safe|quick|deep|compact] [--timeout-ms N] [--max-output-bytes N] [--budget N] [--compact] -- <command> [args...]`
 
-Starts a direct child process with the caller's permissions and environment. Captures stdout and stderr independently up to an explicit byte limit and drains excess bytes. Never treats truncated output as complete. Timeout terminates the direct child only, and descendants may outlive it. Output is buffered, so interactive PTYs and temporal interleaving are not supported. The `vault` policy crate does not authorize this command; `run` is **not a sandbox**.
+Starts a child process with the caller's permissions and environment. Captures stdout and stderr independently up to an explicit byte limit and drains excess bytes. Never treats truncated output as complete. On Unix, timeout signals the child's process group, including descendants that remain in it; escaped descendants may survive. Other platforms terminate only the direct child. Output is buffered, so interactive PTYs and temporal interleaving are not supported. The `vault` policy crate does not authorize this command; `run` is **not a sandbox**.
 
 Only `--compact` or the `compact` preset enables conservative, UTF-8 stdout-only reduction on successful commands. If doing so saves no net words once the recovery hint is included, the original stdout passes through without storing a blob. Otherwise a verified content-addressed blob contains the original stdout and an expansion hint is written to stderr. Neither the capture limit nor an unavailable store allows a false claim of lossless recovery.
 
@@ -10,7 +10,7 @@ Presets: `safe` (120 seconds, 8 MiB per stream, no compaction); `quick` (30 seco
 
 ## `find <query> [limit]` and `peek <relative-path> [start-line] [count]`
 
-`find` scans UTF-8 source file-by-file with ignore rules; it does not materialize a whole-repository snapshot. Search stops after 10,000 text files or 64 MiB scanned, skips files larger than 1 MiB, and shows bounded match-centered excerpts. Filesystem enumeration order is not a relevance ranking and can differ between platforms. `hit_limit_reached` and `truncated` are separate flags. Results may also be incomplete because of ignore rules or skipped entries. The query must be nonblank and at most 512 bytes; the optional hit limit is 1–500. `peek` prints 1–200 lines from one bounded text file with its hash for inspect→edit workflows. It refuses traversal or secret-directory paths. Neither performs AST parsing.
+`find` scans UTF-8 source file-by-file with ignore rules; it does not materialize a whole-repository snapshot. Search stops after 10,000 text files or 64 MiB scanned, skips files larger than 1 MiB, and shows bounded match-centered excerpts. Traversal sorts entries by filename within each directory, providing repeatable results for the same unchanged tree; it is not a relevance ranking, and results can differ when files change. `hit_limit_reached` and `truncated` are separate flags. Results may also be incomplete because of ignore rules or skipped entries. The query must be nonblank and at most 512 bytes; the optional hit limit is 1–500. `peek` prints 1–200 lines from one bounded text file with its hash for inspect→edit workflows. It refuses traversal or secret-directory paths. Neither performs AST parsing.
 
 ## `edit <relative-path> <expected-hash> <old> <new>` and `batch-edit [--check] <manifest.json>`
 
@@ -18,7 +18,7 @@ Hash-anchored source edits. `batch-edit` accepts `search_replace` and `replace_r
 
 ## `store <text>|-` and `expand <handle>`
 
-Persists bytes in a local BLAKE3-addressed store or recovers them by handle. `store -` reads up to 64 MiB from stdin, without exposing content in command-line arguments. Retrieval verifies the full digest. Handles are not access-control credentials. There is no automatic retention or deletion.
+Persists bytes in a local BLAKE3-addressed store or recovers them by handle. `store -` reads up to 64 MiB from stdin, rejects larger inputs rather than saving a truncated prefix, and avoids exposing content in command-line arguments. Retrieval verifies the full digest. Handles are not access-control credentials. There is no automatic retention or deletion.
 
 ## `doctor`
 

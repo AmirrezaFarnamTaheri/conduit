@@ -194,6 +194,7 @@ fn build_walker(root: &Path) -> ignore::Walk {
         .git_exclude(true)
         .git_global(true)
         .require_git(false)
+        .sort_by_file_name(|left, right| left.cmp(right))
         .filter_entry(|entry| {
             if entry.depth() == 0 { return true; }
             let name = entry.file_name().to_string_lossy();
@@ -362,6 +363,17 @@ mod streaming_tests {
         ));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn streaming_find_uses_repeatable_name_order_before_hit_limit() {
+        let dir = root("order");
+        fs::write(dir.join("z.rs"), "needle\n").unwrap();
+        fs::write(dir.join("a.rs"), "needle\n").unwrap();
+        let result = find_streaming(&dir, "needle", 1).unwrap();
+        assert_eq!(result.hits[0].path, PathBuf::from("a.rs"));
+        assert!(result.limit_reached);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

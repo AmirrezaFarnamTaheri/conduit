@@ -45,18 +45,21 @@ fn capture(mut input: impl Read, maximum: usize) -> io::Result<Capture> {
 }
 
 /// Captures both streams independently and drains over-limit output rather
-/// than deadlocking the child on a full pipe. A timeout kills the direct
-/// child; descendant-process containment requires an OS sandbox/supervisor.
+/// than deadlocking the child. On Unix, a timed-out child and members of its
+/// process group are signaled; processes that leave the group can survive.
 pub fn run(program: &str, args: &[String], options: RunOptions) -> io::Result<RunResult> {
     if options.timeout.is_zero() || options.max_stream_bytes == 0 {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "run resource limits must be positive"));
     }
     let start = Instant::now();
-    let mut child = Command::new(program)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+    let mut command = Command::new(program);
+    command.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn()?;
     let stdout = child.stdout.take().ok_or_else(|| io::Error::other("missing stdout pipe"))?;
     let stderr = child.stderr.take().ok_or_else(|| io::Error::other("missing stderr pipe"))?;
     let (tx, rx) = mpsc::channel();
@@ -72,10 +75,18 @@ pub fn run(program: &str, args: &[String], options: RunOptions) -> io::Result<Ru
 
     let mut timed_out = false;
     let status = loop {
-        if let Some(status) = child.try_wait()? { break status; }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                terminate(&mut child);
+                let _ = child.wait();
+                return Err(error);
+            }
+        }
         if start.elapsed() >= options.timeout {
             timed_out = true;
-            let _ = child.kill();
+            terminate(&mut child);
             break child.wait()?;
         }
         thread::sleep(Duration::from_millis(20));
@@ -96,6 +107,17 @@ pub fn run(program: &str, args: &[String], options: RunOptions) -> io::Result<Ru
         timed_out,
         elapsed: start.elapsed(),
     })
+}
+
+fn terminate(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        if let Ok(pid) = i32::try_from(child.id()) {
+            // The child was spawned as its own group leader and is not reaped yet.
+            if unsafe { libc::killpg(pid, libc::SIGKILL) } == 0 { return; }
+        }
+    }
+    let _ = child.kill();
 }
 
 #[cfg(test)]
@@ -143,6 +165,18 @@ mod tests {
         assert_eq!(result.stdout.bytes, b"123");
         assert_eq!(result.stdout.total_bytes, 10);
         assert!(result.stdout.truncated);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_reaps_a_descendant_holding_output_pipes() {
+        let args = vec!["-c".to_owned(), "sleep 30 & wait".to_owned()];
+        let result = run("sh", &args, RunOptions {
+            timeout: Duration::from_millis(100),
+            max_stream_bytes: 1024,
+        }).unwrap();
+        assert!(result.timed_out);
+        assert!(result.elapsed < Duration::from_secs(2));
     }
 
     #[test]
