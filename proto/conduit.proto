@@ -1,0 +1,9 @@
+syntax = "proto3";
+package conduit.v1;
+
+message Session { string id = 1; string agent = 2; string workspace = 3; uint64 started_unix_ms = 4; string profile = 5; }
+message BlobRef { string handle = 1; bytes blake3 = 2; uint64 bytes = 3; uint32 raw_tokens = 4; string mime = 5; uint64 expires_unix_ms = 6; }
+message ToolCall { string call_id = 1; string command = 2; string cwd = 3; uint32 timeout_seconds = 4; }
+message ToolResult { string call_id = 1; int32 exit_code = 2; string presented = 3; BlobRef raw = 4; uint32 presented_tokens = 5; uint32 raw_tokens = 6; repeated string dropped = 7; }
+message Savings { string module = 1; uint32 raw_tokens = 2; uint32 presented_tokens = 3; bool measured = 4; string method = 5; }
+message Event { string session_id = 1; uint64 sequence = 2; uint64 timestamp_unix_ms = 3; oneof body { ToolCall tool_call = 10; ToolResult tool_result = 11; Savings savings = 12; } }

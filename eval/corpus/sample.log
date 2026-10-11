@@ -1,0 +1,6 @@
+ERROR auth/login.rs:42: invalid token
+warning: repeated generated note
+warning: repeated generated note
+warning: repeated generated note
+running 24 tests
+24 passed; 0 failed; exit=0
