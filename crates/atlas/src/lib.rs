@@ -189,7 +189,7 @@ pub fn find_streaming(root: impl AsRef<Path>, query: &str, limit: usize) -> io::
 fn build_walker(root: &Path) -> ignore::Walk {
     WalkBuilder::new(root)
         .follow_links(false)
-        .hidden(false)
+        .hidden(true)
         .git_ignore(true)
         .git_exclude(true)
         .git_global(true)
@@ -199,7 +199,7 @@ fn build_walker(root: &Path) -> ignore::Walk {
             if entry.depth() == 0 { return true; }
             let name = entry.file_name().to_string_lossy();
             !matches!(name.as_ref(),
-                ".git" | ".conduit" | ".hg" | ".svn" | ".venv" | "venv" |
+                ".git" | ".conduit" | ".noqte" | ".claude" | ".hg" | ".svn" | ".venv" | "venv" |
                 "node_modules" | "target" | "dist" | "build" | "__pycache__" |
                 ".next" | ".cache" | ".ssh" | ".aws" | ".secrets" | "secrets") &&
             !name.starts_with(".env") && !name.starts_with(".conduit-edit-")
@@ -256,6 +256,9 @@ mod tests {
         fs::write(root.join("safe.rs"), "needle\n").unwrap();
         fs::write(root.join("secret.generated"), "needle\n").unwrap();
         fs::write(root.join(".env"), "needle\n").unwrap();
+        fs::write(root.join(".hidden.rs"), "needle\n").unwrap();
+        fs::create_dir(root.join(".noqte")).unwrap();
+        fs::write(root.join(".noqte/private.rs"), "needle\n").unwrap();
         fs::write(root.join("binary"), b"needle\0more").unwrap();
         let snapshot = Snapshot::build(&root).unwrap();
         let hits = snapshot.search("needle", 100);
@@ -304,7 +307,7 @@ pub fn peek(root: impl AsRef<Path>, relative: impl AsRef<Path>, start: usize, co
     for component in relative.components().chain(logical.components()) {
         if let Component::Normal(name) = component {
             let name = name.to_string_lossy();
-            if matches!(name.as_ref(), ".git" | ".conduit" | ".ssh" | ".aws" | ".secrets" | "secrets") || name.starts_with(".env") {
+            if matches!(name.as_ref(), ".git" | ".conduit" | ".noqte" | ".claude" | ".ssh" | ".aws" | ".secrets" | "secrets") || name.starts_with(".env") {
                 return Err(io::Error::new(io::ErrorKind::PermissionDenied, "peek of sensitive path is disabled"));
             }
         }
@@ -322,7 +325,11 @@ pub fn peek(root: impl AsRef<Path>, relative: impl AsRef<Path>, start: usize, co
     hasher.update(text.as_bytes());
     let all: Vec<&str> = text.lines().collect();
     let end = start.saturating_add(count).saturating_sub(1).min(all.len());
-    let selected = all.iter().enumerate().skip(start - 1).take(count).map(|(index, line)| (index + 1, (*line).to_owned())).collect();
+    let selected = all.iter().enumerate().skip(start - 1).take(count).map(|(index, line)| {
+        let excerpt: String = line.chars().take(500).collect();
+        let clipped = line.chars().count() > 500;
+        (index + 1, if clipped { format!("{excerpt}... [line clipped]") } else { excerpt })
+    }).collect();
     Ok(Peek {
         hash: hasher.finalize().to_hex().to_string(),
         total_lines: all.len(),
@@ -336,6 +343,19 @@ mod peek_tests {
     use super::*;
 
     #[test]
+    fn peek_clips_long_lines_but_hashes_full_source() {
+        let root = std::env::temp_dir().join(format!("conduit-peek-long-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let original = format!("{}NEEDLE\n", "x".repeat(900));
+        fs::write(root.join("long.rs"), &original).unwrap();
+        let peeked = peek(&root, "long.rs", 1, 1).unwrap();
+        assert!(peeked.lines[0].1.ends_with("... [line clipped]"));
+        assert!(peeked.lines[0].1.chars().count() < 530);
+        assert_eq!(peeked.hash, blake3::hash(original.as_bytes()).to_hex().to_string());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn bounded_peek_includes_stable_hash_and_line_numbers() {
         let root = std::env::temp_dir().join(format!("conduit-peek-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
@@ -346,6 +366,9 @@ mod peek_tests {
         assert!(result.truncated);
         assert_eq!(result.hash.len(), 64);
         assert!(peek(&root, ".env", 1, 10).is_err());
+        fs::create_dir_all(root.join(".noqte")).unwrap();
+        fs::write(root.join(".noqte/settings.txt"), "private").unwrap();
+        assert!(peek(&root, ".noqte/settings.txt", 1, 10).is_err());
         assert!(peek(&root, "../outside", 1, 10).is_err());
         let _ = fs::remove_dir_all(root);
     }

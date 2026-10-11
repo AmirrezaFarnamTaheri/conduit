@@ -82,10 +82,16 @@ fn find_peek_and_batch_edit_preflight_and_commit() {
     let root = Workspace::new();
     fs::write(root.path().join("app.rs"), "fn before() {}\n").unwrap();
     fs::write(root.path().join(".env"), "fn before() {}\n").unwrap();
+    fs::write(root.path().join(".hidden.rs"), "fn before() {}\n").unwrap();
+    fs::create_dir(root.path().join(".noqte")).unwrap();
+    fs::write(root.path().join(".noqte/settings.txt"), "fn before() {}\n").unwrap();
     let find = root.command(&["find", "before", "20"]);
     assert!(find.status.success(), "{}", utf8(&find.stderr));
     assert!(utf8(&find.stdout).contains("app.rs:1:"));
     assert!(!utf8(&find.stdout).contains(".env:"));
+    assert!(!utf8(&find.stdout).contains(".hidden.rs:"));
+    assert!(!utf8(&find.stdout).contains(".noqte/"));
+    assert!(!root.command(&["peek", ".noqte/settings.txt"]).status.success());
     let peek = root.command(&["peek", "app.rs", "1", "20"]);
     let hash = hash_from_peek(&peek);
 

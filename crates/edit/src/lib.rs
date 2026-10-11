@@ -245,8 +245,13 @@ fn checked_path(workspace: &Path, relative: &Path) -> io::Result<PathBuf> {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "path escapes workspace through symlink"));
     }
     let inner = target.strip_prefix(workspace).unwrap_or(&target);
-    if inner.components().any(|component| matches!(component, Component::Normal(name) if name == ".git" || name == ".conduit")) {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "editing repository metadata is disabled"));
+    for component in relative.components().chain(inner.components()) {
+        if let Component::Normal(name) = component {
+            let name = name.to_string_lossy();
+            if matches!(name.as_ref(), ".git" | ".conduit" | ".noqte" | ".claude" | ".ssh" | ".aws" | ".secrets" | "secrets") || name.starts_with(".env") {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "editing protected workspace paths is disabled"));
+            }
+        }
     }
     Ok(target)
 }
@@ -357,6 +362,13 @@ mod tests {
         fs::create_dir(root.join(".git")).unwrap();
         fs::write(root.join(".git/config"), "before").unwrap();
         assert!(apply(&root, &[replace(".git/config", &hash(b"before"), "before", "after")]).is_err());
+        fs::create_dir(root.join(".noqte")).unwrap();
+        fs::write(root.join(".noqte/config"), "before").unwrap();
+        fs::write(root.join(".env.local"), "before").unwrap();
+        for name in [".noqte/config", ".env.local"] {
+            assert_eq!(apply(&root, &[replace(name, &hash(b"before"), "before", "after")]).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(fs::read_to_string(root.join(name)).unwrap(), "before");
+        }
         let _ = fs::remove_dir_all(root);
     }
 }
