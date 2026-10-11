@@ -68,11 +68,7 @@ fn main() {
         Some("stats") => {
             let session = args.next().unwrap_or_else(|| usage());
             let log = EventLog::open(root().join("sessions").join(format!("{session}.jsonl"))).unwrap_or_else(|e| fail(e));
-            let mut raw = 0u64; let mut shown = 0u64;
-            for line in log.read().unwrap_or_else(|e| fail(e)) {
-                let nums: Vec<u64> = line.split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty()).filter_map(|s| s.parse().ok()).collect();
-                if nums.len() >= 2 { raw += nums[nums.len()-2]; shown += nums[nums.len()-1]; }
-            }
+            let (raw, shown) = log.totals().unwrap_or_else(|e| fail(e));
             println!("raw_tokens={raw} presented_tokens={shown} saved_tokens={}", raw.saturating_sub(shown));
         }
         Some("bench") => {

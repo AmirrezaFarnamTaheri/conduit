@@ -1,5 +1,5 @@
 use blake3::Hasher;
-use std::{fs, io, path::{Path, PathBuf}};
+use std::{fs, io, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlobRef { pub handle: String, pub hash: String, pub bytes: u64 }
@@ -20,11 +20,15 @@ impl BlobStore {
         let path = self.root.join(&hash[0..2]).join(&hash);
         if !path.exists() {
             fs::create_dir_all(path.parent().expect("hash path has parent"))?;
-            let temp = path.with_extension("tmp");
+            let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+            let temp = path.with_extension(format!("tmp-{}-{}", std::process::id(), nonce));
             fs::write(&temp, data)?;
-            fs::rename(temp, &path)?;
+            if let Err(error) = fs::rename(&temp, &path) {
+                let _ = fs::remove_file(&temp);
+                if !path.exists() { return Err(error); }
+            }
         }
-        Ok(BlobRef { handle: format!("cx:o:{}", base32_prefix(&hasher.finalize().as_bytes()[..12])), hash, bytes: data.len() as u64 })
+        Ok(BlobRef { handle: handle_for_hash(&hash), hash, bytes: data.len() as u64 })
     }
 
     pub fn get(&self, handle: &str) -> io::Result<Vec<u8>> {
@@ -36,7 +40,7 @@ impl BlobStore {
             if prefix.is_dir() {
                 for item in fs::read_dir(prefix)? {
                     let item = item?.path();
-                    if item.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with(hash)).unwrap_or(false) { matches.push(item); }
+                    if item.file_name().and_then(|name| name.to_str()).map(|name| handle_for_hash(name) == handle).unwrap_or(false) { matches.push(item); }
                 }
             }
         }
@@ -45,10 +49,28 @@ impl BlobStore {
 }
 
 fn invalid(message: &str) -> io::Error { io::Error::new(io::ErrorKind::InvalidInput, message) }
+fn handle_for_hash(hash: &str) -> String {
+    let mut bytes = [0u8; 12];
+    for (index, chunk) in hash.as_bytes().chunks(2).take(12).enumerate() {
+        bytes[index] = u8::from_str_radix(std::str::from_utf8(chunk).unwrap_or("00"), 16).unwrap_or(0);
+    }
+    format!("cx:o:{}", base32_prefix(&bytes))
+}
+
 fn base32_prefix(bytes: &[u8]) -> String {
     const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz234567";
-    let mut out = String::new(); let mut buffer = 0u16; let mut bits = 0u8;
-    for &byte in bytes { buffer = (buffer << 8) | byte as u16; bits += 8; while bits >= 5 { bits -= 5; out.push(ALPHABET[((buffer >> bits) & 31) as usize] as char); } }
+    let mut out = String::new();
+    let mut buffer = 0u32;
+    let mut bits = 0u8;
+    for &byte in bytes {
+        buffer = (buffer << 8) | byte as u32;
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            out.push(ALPHABET[((buffer >> bits) & 31) as usize] as char);
+            buffer &= (1u32 << bits).saturating_sub(1);
+        }
+    }
     if bits > 0 { out.push(ALPHABET[((buffer << (5 - bits)) & 31) as usize] as char); }
     out
 }

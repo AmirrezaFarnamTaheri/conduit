@@ -21,26 +21,32 @@ pub fn distill(raw: &str, budget: usize) -> Distilled {
         let trimmed = line.trim();
         if is_signal(trimmed) && seen.insert(trimmed.to_owned(), ()).is_none() { selected.push(*line); }
     }
+
     let tail_start = lines.len().saturating_sub(20);
     for line in &lines[tail_start..] {
-        if seen.insert((*line).to_owned(), ()).is_none() { selected.push(*line); }
-    }
-    let mut presented = selected.join("\n");
-    if !presented.is_empty() { presented.push('\n'); }
-    let presented_tokens = token_count(&presented);
-    if presented_tokens > budget {
-        let mut bounded = String::new();
-        for line in presented.lines() {
-            let addition = token_count(line) + usize::from(!bounded.is_empty());
-            if token_count(&bounded) + addition > budget { break; }
-            if !bounded.is_empty() { bounded.push('\n'); }
-            bounded.push_str(line);
+        if seen.contains_key(line) { continue; }
+        let candidate = line.to_string();
+        let with_candidate = join_lines(&selected, Some(line));
+        if token_count(&with_candidate) <= budget {
+            seen.insert(candidate, ());
+            selected.push(*line);
         }
-        presented = bounded;
     }
-    let presented_tokens = token_count(&presented);
-    let dropped = vec![format!("{} lines", lines.len().saturating_sub(presented.lines().count()))];
-    Distilled { presented, dropped, raw_tokens, presented_tokens }
+
+    let presented = join_lines(&selected, None);
+    let retained = selected.len();
+    let dropped = if retained < lines.len() { vec![format!("{} lines", lines.len() - retained)] } else { Vec::new() };
+    Distilled { presented: presented.clone(), dropped, raw_tokens, presented_tokens: token_count(&presented) }
+}
+
+fn join_lines(lines: &[&str], extra: Option<&str>) -> String {
+    let mut result = lines.join("\n");
+    if let Some(line) = extra {
+        if !result.is_empty() { result.push('\n'); }
+        result.push_str(line);
+    }
+    if !result.is_empty() { result.push('\n'); }
+    result
 }
 
 fn is_signal(line: &str) -> bool {
@@ -60,13 +66,29 @@ mod tests {
         let result = distill(raw, 5);
         assert!(result.presented.contains("src/lib.rs:42"));
         assert!(result.presented.contains("exit=1"));
-        assert!(result.presented_tokens <= 8);
+        assert!(result.presented_tokens <= 5);
         assert!(!result.dropped.is_empty());
     }
+    #[test]
+    fn never_drops_a_signal_when_budget_is_too_small() {
+        let raw = "error this diagnostic has a long explanation src/main.rs:9\nordinary noise\n";
+        let result = distill(raw, 1);
+        assert!(result.presented.contains("src/main.rs:9"));
+        assert!(result.presented_tokens > 1);
+    }
+
+    #[test]
+    fn does_not_report_a_drop_when_all_lines_are_retained() {
+        let raw = "ordinary\nerror src/main.rs:1\n";
+        let result = distill(raw, 3);
+        assert!(result.dropped.is_empty());
+    }
+
     #[test]
     fn passthrough_is_byte_exact_under_budget() {
         let raw = "ok\n";
         assert_eq!(distill(raw, 10).presented, raw);
         assert!(distill(raw, 10).dropped.is_empty());
     }
+
 }

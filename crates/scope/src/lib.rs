@@ -1,9 +1,17 @@
-use std::{fs::{self, OpenOptions}, io::{self, BufRead, BufReader, Write}, path::{Path, PathBuf}, sync::Mutex};
+use std::{fmt, fs::{self, OpenOptions}, io::{self, BufRead, BufReader, Write}, path::{Path, PathBuf}, sync::Mutex};
 
 #[derive(Debug, Clone)]
 pub struct Savings { pub module: String, pub raw_tokens: u32, pub presented_tokens: u32, pub measured: bool }
 
 pub enum Event { Savings(Savings) }
+
+impl fmt::Display for Event {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Savings(s) => write!(output, "savings module={} raw_tokens={} presented_tokens={} measured={}", s.module, s.raw_tokens, s.presented_tokens, s.measured),
+        }
+    }
+}
 
 pub struct EventLog { path: PathBuf, lock: Mutex<()> }
 
@@ -20,9 +28,25 @@ impl EventLog {
         let mut file = OpenOptions::new().create(true).append(true).open(&self.path)?;
         file.write_all(line.as_bytes())?; file.sync_data()
     }
+    pub fn totals(&self) -> io::Result<(u64, u64)> {
+        let mut raw = 0;
+        let mut presented = 0;
+        for line in self.read()? {
+            let Some(raw_value) = json_number(&line, "raw_tokens") else { continue };
+            let Some(presented_value) = json_number(&line, "presented_tokens") else { continue };
+            raw += raw_value;
+            presented += presented_value;
+        }
+        Ok((raw, presented))
+    }
     pub fn read(&self) -> io::Result<Vec<String>> { BufReader::new(fs::File::open(&self.path)?).lines().collect() }
 }
 
+fn json_number(line: &str, key: &str) -> Option<u64> {
+    let marker = format!("\"{key}\":");
+    let start = line.find(&marker)? + marker.len();
+    line[start..].split(|character: char| !character.is_ascii_digit()).next()?.parse().ok()
+}
 fn escape(value: &str) -> String { value.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n") }
 
 #[cfg(test)]
@@ -30,4 +54,9 @@ mod tests {
     use super::*;
     #[test]
     fn appends_and_replays_events() { let path = std::env::temp_dir().join(format!("conduit-scope-{}.jsonl", std::process::id())); let log = EventLog::open(&path).unwrap(); log.append(Event::Savings(Savings { module: "lens".into(), raw_tokens: 100, presented_tokens: 40, measured: false })).unwrap(); let lines = log.read().unwrap(); assert_eq!(lines.len(), 1); assert!(lines[0].contains("\"raw_tokens\":100")); let _ = fs::remove_file(path); }
+
+ { let path = std::env::temp_dir().join(format!("conduit-scope-totals-{}.jsonl", std::process::id())); let log = EventLog::open(&path).unwrap(); log.append(Event::Savings(Savings { module: "lens".into(), raw_tokens: 100, presented_tokens: 40, measured: true })).unwrap(); log.append(Event::Savings(Savings { module: "atlas".into(), raw_tokens: 20, presented_tokens: 20, measured: false })).unwrap(); assert_eq!(log.totals().unwrap(), (120, 60)); let _ = fs::remove_file(path); }
+
+    #[test]
+    fn escapes_module_names_without_breaking_record_shape() { let path = std::env::temp_dir().join(format!("conduit-scope-escape-{}.jsonl", std::process::id())); let log = EventLog::open(&path).unwrap(); log.append(Event::Savings(Savings { module: "a\"b\nc".into(), raw_tokens: 1, presented_tokens: 1, measured: false })).unwrap(); assert_eq!(log.totals().unwrap(), (1, 1)); let _ = fs::remove_file(path); }
 }
