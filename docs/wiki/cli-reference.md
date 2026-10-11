@@ -16,9 +16,9 @@ Presets: `safe` (120 seconds, 8 MiB per stream, no compaction); `quick` (30 seco
 
 Hash-anchored source edits. `batch-edit` accepts `search_replace` and `replace_range` operations with per-target BLAKE3 preconditions; `--check` validates all operations without changing source content. A plan is not reserved between the preflight and commit. The shared validator blocks path escapes, protected metadata, stale hashes, duplicate canonical targets, hardlinked files, oversized inputs/outputs, and ambiguous matches. Limits: 1–128 operations, 8 MiB per target, 64 MiB combined input/output, and a 1 MiB manifest. Uses a process-lifetime cooperative lock under the workspace `.conduit` directory and staged file replacement. Multi-file crash atomicity and safety from uncooperative writers are not provided. See [batch edit](batch-edit.md).
 
-## `store <text>|-` and `expand <handle>`
+## `store <text>|-`, `inspect <handle>`, and `expand <handle> [--offset N --length N]`
 
-Persists bytes in a local BLAKE3-addressed store or recovers them by handle. `store -` reads up to 64 MiB from stdin, rejects larger inputs rather than saving a truncated prefix, and avoids exposing content in command-line arguments. Retrieval verifies the full digest. Handles are not access-control credentials. There is no automatic retention or deletion.
+Persists bytes in a local BLAKE3-addressed store or recovers them by handle. `store -` reads up to 64 MiB from stdin, rejects larger inputs rather than saving a truncated prefix, and avoids exposing content in command-line arguments. `inspect` verifies the full digest and reports byte length and hash without returning the payload. `expand --offset N --length N` returns an exact, nonempty byte range of at most 1 MiB after verifying the **whole** blob; offsets are zero-based, and errors emit no partial stdout. Full expansion still returns the complete bounded object. Short reads save memory but still read and hash the full blob. Handles are not access-control credentials. There is no automatic retention or deletion.
 
 ## `doctor`
 

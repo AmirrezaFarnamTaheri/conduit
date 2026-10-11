@@ -1,13 +1,14 @@
 use blake3::Hasher;
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 const MAX_BLOB_BYTES: usize = 64 * 1024 * 1024;
+const MAX_WINDOW_BYTES: usize = 1024 * 1024;
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,10 +57,10 @@ impl BlobStore {
         let path = directory.join(&hash);
         if path.exists() {
             // An existing digest name is not proof of intact content.
-            verify_blob(&path, &hash)?;
+            verify_blob_window(&path, &hash, Some((0, 0)))?;
         } else {
             self.publish(&directory, &path, data)?;
-            verify_blob(&path, &hash)?;
+            verify_blob_window(&path, &hash, Some((0, 0)))?;
         }
         Ok(BlobRef {
             handle: handle_for_hash(&hash),
@@ -146,10 +147,10 @@ impl BlobStore {
                     report.problem(format!("unexpected blob entry {shard}/{name}"));
                     continue;
                 }
-                match verify_blob(&entry.path(), name) {
-                    Ok(bytes) => {
+                match verify_blob_window(&entry.path(), name, Some((0, 0))) {
+                    Ok((_, length)) => {
                         report.checked_blobs = report.checked_blobs.saturating_add(1);
-                        report.verified_bytes = report.verified_bytes.saturating_add(bytes.len() as u64);
+                        report.verified_bytes = report.verified_bytes.saturating_add(length);
                     }
                     Err(error) => report.problem(format!("unverifiable blob {shard}/{name}: {error}")),
                 }
@@ -158,7 +159,27 @@ impl BlobStore {
         Ok(report)
     }
 
+    pub fn inspect(&self, handle: &str) -> io::Result<BlobRef> {
+        let (path, hash) = self.resolve(handle)?;
+        let (_, bytes) = verify_blob_window(&path, &hash, Some((0, 0)))?;
+        Ok(BlobRef { handle: handle.to_owned(), hash, bytes })
+    }
+
+    pub fn get_range(&self, handle: &str, offset: usize, length: usize) -> io::Result<Vec<u8>> {
+        if length == 0 || length > MAX_WINDOW_BYTES {
+            return Err(invalid("window length must be 1-1048576 bytes"));
+        }
+        let end = offset.checked_add(length).ok_or_else(|| invalid("window offset overflow"))?;
+        let (path, hash) = self.resolve(handle)?;
+        Ok(verify_blob_window(&path, &hash, Some((offset, end)))?.0)
+    }
+
     pub fn get(&self, handle: &str) -> io::Result<Vec<u8>> {
+        let (path, hash) = self.resolve(handle)?;
+        Ok(verify_blob_window(&path, &hash, None)?.0)
+    }
+
+    fn resolve(&self, handle: &str) -> io::Result<(PathBuf, String)> {
         let encoded = handle
             .strip_prefix("cx:o:")
             .ok_or_else(|| invalid("invalid output handle"))?;
@@ -188,10 +209,7 @@ impl BlobStore {
                 return Err(invalid("ambiguous output handle"));
             }
         }
-        let (path, hash) = match_path.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "handle expired or unknown")
-        })?;
-        verify_blob(&path, &hash)
+        match_path.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "handle expired or unknown"))
     }
 }
 
@@ -201,11 +219,7 @@ fn digest(data: &[u8]) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-fn verify_blob(path: &Path, expected_hash: &str) -> io::Result<Vec<u8>> {
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.file_type().is_file() || metadata.len() > MAX_BLOB_BYTES as u64 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid stored blob type or size"));
-    }
+fn verify_blob_window(path: &Path, expected_hash: &str, window: Option<(usize, usize)>) -> io::Result<(Vec<u8>, u64)> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -213,17 +227,44 @@ fn verify_blob(path: &Path, expected_hash: &str) -> io::Result<Vec<u8>> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW);
     }
-    let file = options.open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "stored blob is not a regular file"));
+    let mut file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > MAX_BLOB_BYTES as u64 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid stored blob type or size"));
     }
+    if let Some((start, end)) = window {
+        if start > end || end > metadata.len() as usize {
+            return Err(invalid("requested byte window exceeds blob bounds"));
+        }
+    }
+    let mut hasher = Hasher::new();
     let mut bytes = Vec::new();
-    use io::Read;
-    file.take(MAX_BLOB_BYTES as u64 + 1).read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_BLOB_BYTES || digest(&bytes) != expected_hash {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "stored blob failed digest verification"));
+    let mut offset = 0usize;
+    let mut buffer = [0u8; 8192];
+    loop {
+        let length = file.read(&mut buffer)?;
+        if length == 0 { break; }
+        offset = offset.checked_add(length).ok_or_else(|| invalid("blob byte count overflow"))?;
+        if offset > MAX_BLOB_BYTES {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "stored blob exceeds size limit"));
+        }
+        hasher.update(&buffer[..length]);
+        match window {
+            None => bytes.extend_from_slice(&buffer[..length]),
+            Some((start, end)) => {
+                let chunk_start = offset - length;
+                let first = start.max(chunk_start);
+                let last = end.min(offset);
+                if first < last {
+                    bytes.extend_from_slice(&buffer[first - chunk_start..last - chunk_start]);
+                }
+            }
+        }
     }
-    Ok(bytes)
+    if offset as u64 != metadata.len() || hasher.finalize().to_hex().as_str() != expected_hash {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "stored blob failed length or digest verification"));
+    }
+    Ok((bytes, offset as u64))
 }
 
 fn is_hex(name: &str) -> bool {
@@ -321,6 +362,27 @@ mod tests {
             std::process::id(),
             NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn ranged_read_verifies_entire_blob_before_returning_bytes() {
+        let dir = temp_root("range");
+        let store = BlobStore::open(&dir).unwrap();
+        let bytes: Vec<u8> = (0..3 * 1024 * 1024).map(|index| (index % 251) as u8).collect();
+        let blob = store.put(&bytes).unwrap();
+        assert_eq!(store.inspect(&blob.handle).unwrap(), blob);
+        let offset = 1024 * 1024 - 3;
+        assert_eq!(store.get_range(&blob.handle, offset, 7).unwrap(), bytes[offset..offset + 7].to_vec());
+        assert!(store.get_range(&blob.handle, 0, 0).is_err());
+        assert!(store.get_range(&blob.handle, 0, 1024 * 1024 + 1).is_err());
+        assert!(store.get_range(&blob.handle, usize::MAX, 2).is_err());
+        assert!(store.get_range(&blob.handle, bytes.len(), 1).is_err());
+        let mut corrupt = bytes;
+        *corrupt.last_mut().unwrap() ^= 1;
+        fs::write(dir.join(&blob.hash[..2]).join(&blob.hash), corrupt).unwrap();
+        assert_eq!(store.get_range(&blob.handle, 0, 4).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert!(store.inspect(&blob.handle).is_err());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

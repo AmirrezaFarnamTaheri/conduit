@@ -4,7 +4,7 @@ Conduit is a **local coding-agent tool-output and source-navigation prototype**.
 
 ## Implementation status (source snapshot)
 
-The CLI currently implements `run`, `find`, `peek`, `edit`, `batch-edit`, `store`, `expand`, `doctor`, `record`, `replay`, `stats`, `repair-session`, and `bench`. The independent `ledger`, `relay`, `guard`, `verify`, `vault`, `memory`, and `fanout` crates are **not wired into the CLI**, and their behavior is **not an execution security boundary**. No daemon, provider gateway, UI, MCP server, remote API, OS sandbox, verified multi-file crash transaction, or data-retention controller is supplied.
+The CLI currently implements `run`, `find`, `peek`, `edit`, `batch-edit`, `store`, `inspect`, `expand`, `doctor`, `record`, `replay`, `stats`, `repair-session`, and `bench`. The independent `ledger`, `relay`, `guard`, `verify`, `vault`, `memory`, and `fanout` crates are **not wired into the CLI**, and their behavior is **not an execution security boundary**. No daemon, provider gateway, UI, MCP server, remote API, OS sandbox, verified multi-file crash transaction, or data-retention controller is supplied.
 
 The CLI launches local commands with the **same privileges and environment as the caller**. It does not enforce the `vault` policy module or isolate the child process. Run only trusted commands within an appropriately isolated operating-system account or managed sandbox. On Unix, timeout signals the child process group, but descendants that leave the group may survive; on other platforms only the direct child is terminated. The wrapper is not a PTY and does not preserve stdout/stderr temporal interleaving.
 
@@ -46,16 +46,18 @@ conduit batch-edit batch.json
 conduit store 'raw text'
 # Read binary or secret input from stdin instead of leaking it into argv
 producer_of_bytes | conduit store -
+conduit inspect cx:o:OUTPUT_HANDLE
+conduit expand cx:o:OUTPUT_HANDLE --offset 0 --length 1024
 conduit expand cx:o:OUTPUT_HANDLE
 conduit doctor             # verify blob integrity without deleting objects
 conduit record SESSION MODULE RAW_WORDS SHOWN_WORDS
 conduit replay SESSION
 conduit stats SESSION
-conduit repair-session SESSION   # explicitly discard only an unterminated tail
+conduit repair-session SESSION   # complete a valid tail or quarantine an invalid fragment
 conduit bench eval/corpus/sample.log 700
 ```
 
-`store -` rejects stdin over 64 MiB rather than saving a truncated prefix. `CONDUIT_HOME` selects local blob/session storage (default `.conduit`). `CONDUIT_WORKSPACE` selects the root for `find`, `peek`, `edit`, and `batch-edit`. Both should be protected by normal OS filesystem permissions. On Unix the store/session code attempts restrictive 0700/0600 modes; Windows ACL isolation is **not validated**. Expansion handles are identifiers, not authorization tokens; treat them as sensitive if the blob is sensitive.
+`store -` rejects stdin over 64 MiB rather than saving a truncated prefix. `inspect` and bounded `expand --offset N --length N` verify the entire blob without retaining more than the requested byte window (up to 1 MiB); full expansion remains available. Even a short range performs I/O over the whole blob. `CONDUIT_HOME` selects local blob/session storage (default `.conduit`). `CONDUIT_WORKSPACE` selects the root for `find`, `peek`, `edit`, and `batch-edit`. Both should be protected by normal OS filesystem permissions. On Unix the store/session code attempts restrictive 0700/0600 modes; Windows ACL isolation is **not validated**. Expansion handles are identifiers, not authorization tokens; treat them as sensitive if the blob is sensitive.
 
 `run` retains a bounded amount from stdout and stderr **independently**, drains the rest, returns an explicit incomplete-output error when either limit is exceeded, and returns `124` when the direct child times out. Such incomplete output is **not losslessly recoverable**. When successful stdout is reduced, the original stdout bytes are persisted first and a recovery handle is emitted to stderr. If storage fails or reduction has no net value after counting the recovery hint, stdout passes through unchanged. For non-successful child exits the program leaves stdout uncompressed; the effective exit status is propagated for ordinary exits, with platform limitations for signal termination. Stderr is never reduced.
 

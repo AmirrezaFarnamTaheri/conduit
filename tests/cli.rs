@@ -51,6 +51,13 @@ fn store_expand_and_doctor_round_trip() {
     let fetched = root.command(&["expand", handle]);
     assert!(fetched.status.success());
     assert_eq!(&fetched.stdout, b"roundtrip bytes");
+    let metadata = root.command(&["inspect", handle]);
+    assert!(metadata.status.success());
+    assert!(utf8(&metadata.stdout).contains("bytes=15"));
+    let window = root.command(&["expand", handle, "--offset", "5", "--length", "4"]);
+    assert!(window.status.success());
+    assert_eq!(window.stdout, b"trip");
+    assert!(!root.command(&["expand", handle, "--offset", "15", "--length", "1"]).status.success());
     let doctor = root.command(&["doctor"]);
     assert!(doctor.status.success(), "{}", utf8(&doctor.stderr));
     assert!(utf8(&doctor.stdout).contains("integrity_problems=0"));
@@ -62,6 +69,10 @@ fn store_expand_and_doctor_round_trip() {
     assert!(!corrupt.status.success(), "corrupted blob must not pass a health scan");
     assert!(utf8(&corrupt.stdout).contains("integrity_problems=1"));
     assert!(!root.command(&["expand", handle]).status.success());
+    let damaged_window = root.command(&["expand", handle, "--offset", "0", "--length", "4"]);
+    assert!(!damaged_window.status.success());
+    assert!(damaged_window.stdout.is_empty());
+    assert!(!root.command(&["inspect", handle]).status.success());
     let bogus = root.command(&["expand", "cx:o:../../etc/passwd"]);
     assert!(!bogus.status.success());
 }

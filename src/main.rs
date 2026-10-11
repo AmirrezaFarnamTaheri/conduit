@@ -15,7 +15,7 @@ use std::{
 };
 
 fn usage() -> ! {
-    eprintln!("usage: conduit run [--preset safe|quick|deep|compact] [--timeout-ms N] [--max-output-bytes N] [--budget N] [--compact] -- PROGRAM [ARGS...]\n       conduit <find|peek|edit|batch-edit|store|expand|doctor|record|replay|stats|repair-session|bench> ...");
+    eprintln!("usage: conduit run [--preset safe|quick|deep|compact] [--timeout-ms N] [--max-output-bytes N] [--budget N] [--compact] -- PROGRAM [ARGS...]\n       conduit <find|peek|edit|batch-edit|store|inspect|expand|doctor|record|replay|stats|repair-session|bench> ...");
     process::exit(2);
 }
 
@@ -251,11 +251,30 @@ fn main() {
             let blob = store.put(&bytes).unwrap_or_else(|error| fail(error));
             println!("{}", blob.handle);
         }
-        Some("expand") => {
+        Some("inspect") => {
             let handle = args.next().unwrap_or_else(|| usage());
             no_extra_args(&mut args);
             let store = BlobStore::open(root().join("blobs")).unwrap_or_else(|error| fail(error));
-            let bytes = store.get(&handle).unwrap_or_else(|error| fail(error));
+            let blob = store.inspect(&handle).unwrap_or_else(|error| fail(error));
+            println!("handle={} hash={} bytes={}", blob.handle, blob.hash, blob.bytes);
+        }
+        Some("expand") => {
+            let handle = args.next().unwrap_or_else(|| usage());
+            let bytes = match args.next() {
+                None => {
+                    let store = BlobStore::open(root().join("blobs")).unwrap_or_else(|error| fail(error));
+                    store.get(&handle).unwrap_or_else(|error| fail(error))
+                }
+                Some(flag) if flag == "--offset" => {
+                    let offset = args.next().and_then(|value| value.parse::<usize>().ok()).unwrap_or_else(|| usage());
+                    if args.next().as_deref() != Some("--length") { usage(); }
+                    let length = args.next().and_then(|value| value.parse::<usize>().ok()).unwrap_or_else(|| usage());
+                    no_extra_args(&mut args);
+                    let store = BlobStore::open(root().join("blobs")).unwrap_or_else(|error| fail(error));
+                    store.get_range(&handle, offset, length).unwrap_or_else(|error| fail(error))
+                }
+                _ => usage(),
+            };
             io::stdout().write_all(&bytes).unwrap_or_else(|error| fail(error));
         }
         Some("doctor") => {
