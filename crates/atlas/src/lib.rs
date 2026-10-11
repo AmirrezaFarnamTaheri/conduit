@@ -190,6 +190,7 @@ fn build_walker(root: &Path) -> ignore::Walk {
     WalkBuilder::new(root)
         .follow_links(false)
         .hidden(true)
+        .add_custom_ignore_filename(".conduitignore")
         .git_ignore(true)
         .git_exclude(true)
         .git_global(true)
@@ -253,7 +254,9 @@ mod tests {
     fn respects_gitignore_and_excludes_secrets_and_binary_files() {
         let root = temp_root("ignores");
         fs::write(root.join(".gitignore"), "*.generated\n").unwrap();
+        fs::write(root.join(".conduitignore"), "local.rs\n").unwrap();
         fs::write(root.join("safe.rs"), "needle\n").unwrap();
+        fs::write(root.join("local.rs"), "needle\n").unwrap();
         fs::write(root.join("secret.generated"), "needle\n").unwrap();
         fs::write(root.join(".env"), "needle\n").unwrap();
         fs::write(root.join(".hidden.rs"), "needle\n").unwrap();

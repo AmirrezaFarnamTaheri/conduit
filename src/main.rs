@@ -15,7 +15,7 @@ use std::{
 };
 
 fn usage() -> ! {
-    eprintln!("usage: conduit run [--preset safe|quick|deep|compact] [--timeout-ms N] [--max-output-bytes N] [--budget N] [--compact] -- PROGRAM [ARGS...]\n       conduit <find|peek|edit|batch-edit|store|inspect|expand|doctor|record|replay|stats|repair-session|bench> ...");
+    eprintln!("usage: conduit run [--preset safe|quick|deep|compact] [--timeout-ms N] [--max-output-bytes N] [--budget N] [--compact] -- PROGRAM [ARGS...]\n       conduit find [--require-complete] <query> [limit]\n       conduit <peek|edit|batch-edit|store|inspect|expand|doctor|record|replay|stats|repair-session|bench> ...");
     process::exit(2);
 }
 
@@ -186,6 +186,7 @@ fn main() {
     match args.next().as_deref() {
         Some("run") => run_command(args),
         Some("find") => {
+            let require_complete = args.next_if(|arg| arg == "--require-complete").is_some();
             let query = args.next().unwrap_or_else(|| usage());
             let limit = args.next().map(|value| value.parse::<usize>().unwrap_or_else(|_| usage())).unwrap_or(20);
             if !(1..=500).contains(&limit) { usage(); }
@@ -200,6 +201,9 @@ fn main() {
             if result.skipped != 0 || result.truncated || result.limit_reached {
                 eprintln!("conduit: search scanned_files={} scanned_bytes={} skipped={} truncated={} hit_limit_reached={}",
                     result.scanned_files, result.scanned_bytes, result.skipped, result.truncated, result.limit_reached);
+            }
+            if require_complete && (result.skipped != 0 || result.truncated || result.limit_reached) {
+                process::exit(75);
             }
         }
         Some("peek") => {

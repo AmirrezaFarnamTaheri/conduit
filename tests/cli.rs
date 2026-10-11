@@ -91,6 +91,13 @@ fn find_peek_and_batch_edit_preflight_and_commit() {
     assert!(!utf8(&find.stdout).contains(".env:"));
     assert!(!utf8(&find.stdout).contains(".hidden.rs:"));
     assert!(!utf8(&find.stdout).contains(".noqte/"));
+    fs::write(root.path().join(".conduitignore"), "ignored.rs\n").unwrap();
+    fs::write(root.path().join("ignored.rs"), "fn before() {}\n").unwrap();
+    let ignored_find = root.command(&["find", "before", "20"]);
+    assert!(ignored_find.status.success());
+    assert!(!utf8(&ignored_find.stdout).contains("ignored.rs:"));
+    let complete = root.command(&["find", "--require-complete", "before", "1"]);
+    assert!(!complete.status.success(), "hit limit must fail complete search");
     assert!(!root.command(&["peek", ".noqte/settings.txt"]).status.success());
     let peek = root.command(&["peek", "app.rs", "1", "20"]);
     let hash = hash_from_peek(&peek);
