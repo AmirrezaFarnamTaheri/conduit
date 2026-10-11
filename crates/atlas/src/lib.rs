@@ -72,11 +72,17 @@ impl Snapshot {
 
     pub fn search(&self, query: &str, limit: usize) -> Vec<Hit> {
         if query.is_empty() || limit == 0 { return Vec::new(); }
-        let needle = query.to_lowercase();
+        let case_sensitive = query.chars().any(char::is_uppercase);
+        let needle = if case_sensitive { query.to_owned() } else { query.to_lowercase() };
         let mut hits = Vec::new();
         for (path, contents, hash) in &self.files {
             for (index, line) in contents.lines().enumerate() {
-                if line.to_lowercase().contains(&needle) {
+                let matches = if case_sensitive {
+                    line.contains(&needle)
+                } else {
+                    line.to_lowercase().contains(&needle)
+                };
+                if matches {
                     hits.push(Hit {
                         path: path.clone(),
                         line: index + 1,
@@ -113,7 +119,8 @@ pub fn find_streaming(root: impl AsRef<Path>, query: &str, limit: usize) -> io::
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "search requires a nonempty query <=512 bytes and 1-500 hits"));
     }
     let root = root.as_ref().canonicalize()?;
-    let needle = query.to_lowercase();
+    let case_sensitive = query.chars().any(char::is_uppercase);
+    let needle = if case_sensitive { query.to_owned() } else { query.to_lowercase() };
     let mut result = SearchResult {
         hits: Vec::new(), scanned_files: 0, scanned_bytes: 0,
         skipped: 0, truncated: false, limit_reached: false,
@@ -153,18 +160,24 @@ pub fn find_streaming(root: impl AsRef<Path>, query: &str, limit: usize) -> io::
         };
         let relative = entry.path().strip_prefix(&root).unwrap_or(entry.path()).to_path_buf();
         for (index, line) in text.lines().enumerate() {
-            let lowercase = line.to_lowercase();
-            let Some(match_byte_offset) = lowercase.find(&needle) else { continue };
+            let match_chars = if case_sensitive {
+                let Some(offset) = line.find(&needle) else { continue };
+                line[..offset].chars().count()
+            } else {
+                let lowercase = line.to_lowercase();
+                let Some(offset) = lowercase.find(&needle) else { continue };
+                let mut lowered_bytes = 0usize;
+                let mut source_chars = 0usize;
+                for character in line.chars() {
+                    if lowered_bytes >= offset { break; }
+                    lowered_bytes += character.to_lowercase().map(char::len_utf8).sum::<usize>();
+                    source_chars += 1;
+                }
+                source_chars
+            };
             // A hit is a navigation aid, not a second copy of a megabyte line.
             // Map a Unicode-lowercased match back to source character offsets;
             // lowercase transformations can expand one source character.
-            let mut lowered_bytes = 0usize;
-            let mut match_chars = 0usize;
-            for character in line.chars() {
-                if lowered_bytes >= match_byte_offset { break; }
-                lowered_bytes += character.to_lowercase().map(char::len_utf8).sum::<usize>();
-                match_chars += 1;
-            }
             let start = match_chars.saturating_sub(80);
             let excerpt_body: String = line.chars().skip(start).take(240).collect();
             let end = start + excerpt_body.chars().count();
@@ -234,6 +247,17 @@ mod tests {
         ));
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn smart_case_supports_broad_search_and_exact_capitalization() {
+        let root = temp_root("smart-case");
+        fs::write(root.join("a.rs"), "Target\ntarget\n").unwrap();
+        let snapshot = Snapshot::build(&root).unwrap();
+        assert_eq!(snapshot.search("target", 10).len(), 2);
+        assert_eq!(snapshot.search("Target", 10).len(), 1);
+        assert_eq!(snapshot.search("TARGET", 10).len(), 0);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -389,6 +413,15 @@ mod streaming_tests {
         ));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn streaming_search_uses_smart_case() {
+        let dir = root("smart-case");
+        fs::write(dir.join("a.rs"), "Target\ntarget\n").unwrap();
+        assert_eq!(find_streaming(&dir, "target", 10).unwrap().hits.len(), 2);
+        assert_eq!(find_streaming(&dir, "Target", 10).unwrap().hits.len(), 1);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
