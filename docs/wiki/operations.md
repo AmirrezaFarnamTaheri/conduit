@@ -6,7 +6,7 @@ Blob storage is content-addressed and deduplicated. Session logs are append-only
 
 ## Diagnostics
 
-Run `conduit doctor` to verify stored blob contents and identify unexpected shard entries. `doctor` reads object contents, so restrict access to authorized operators. It is read-only and neither deletes staging files nor races-freezes concurrently published objects. Run `conduit stats SESSION` to validate session accounting without building an in-memory list of all events. `repair-session SESSION` is explicitly destructive to a torn final record only; preserve a backup of a damaged log if forensic reconstruction matters.
+Run `conduit doctor` to verify stored blob contents and identify unexpected shard entries. `doctor` reads object contents, so restrict access to authorized operators. It is read-only and neither deletes staging files nor races-freezes concurrently published objects. Run `conduit stats SESSION` to validate session accounting without building an in-memory list of all events. `repair-session SESSION` completes a valid unterminated event or quarantines a malformed tail before truncation; retain and protect the reported `.torn-*.bak` file according to your incident policy.
 
 When behavior is unexpected, collect the command, profile, exit code, presented output, and handle—not secrets or the full raw blob by default. Confirm the workspace and `CONDUIT_HOME` values first. Re-run with the raw handle only when necessary.
 

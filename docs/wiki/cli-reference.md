@@ -26,7 +26,7 @@ Read-only integrity scan of the local blob store. Reports verified objects/bytes
 
 ## `record`, `replay`, `stats`, `repair-session`
 
-Writes and reads synchronized JSONL session events. Session identifiers are validated. Records are bounded to 8 KiB; each session log is limited to 64 MiB. `stats` calculates totals from a streaming, validated traversal. An incomplete last record fails closed. `repair-session` explicitly removes only an unterminated final record, after validating the preceding records. It does not reconstruct missing events or repair malformed complete lines. Accounting is a caller-provided or whitespace-word estimate, **not tokenizer-derived usage**.
+Writes and reads synchronized JSONL session events. Session identifiers are validated. Records are bounded to 8 KiB; each session log is limited to 64 MiB. `stats` calculates totals from a streaming, validated traversal. An incomplete last record fails closed. `repair-session` appends a missing newline to an otherwise valid event; for malformed tails it writes a private, synced `.torn-*.bak` copy before truncation and reports its path. It refuses malformed earlier lines and does not reconstruct missing events. Quarantined fragments remain on disk until explicitly handled. Accounting is a caller-provided or whitespace-word estimate, **not tokenizer-derived usage**.
 
 ## `bench [file] [budget]`
 

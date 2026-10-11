@@ -3,7 +3,7 @@ mod run;
 use conduit_atlas::{find_streaming, peek};
 use conduit_edit::{apply, preview, Operation};
 use conduit_lens::distill;
-use conduit_scope::{Event, EventLog, Savings};
+use conduit_scope::{Event, EventLog, Savings, TailRepair};
 use conduit_store::BlobStore;
 use run::{Capture, RunOptions, RunResult};
 use std::{
@@ -286,7 +286,11 @@ fn main() {
             let session = args.next().unwrap_or_else(|| usage());
             no_extra_args(&mut args);
             let log = session_log(&session).unwrap_or_else(|error| fail(error));
-            println!("partial_tail_removed={}", log.repair_partial_tail().unwrap_or_else(|error| fail(error)));
+            match log.repair_tail().unwrap_or_else(|error| fail(error)) {
+                TailRepair::Unchanged => println!("partial_tail_removed=false action=unchanged"),
+                TailRepair::CompletedRecord => println!("partial_tail_removed=false action=completed_record"),
+                TailRepair::Quarantined { backup } => println!("partial_tail_removed=true action=quarantined backup={}", backup.display()),
+            }
         }
         Some("stats") => {
             let session = args.next().unwrap_or_else(|| usage());

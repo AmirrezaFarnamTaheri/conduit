@@ -7,6 +7,8 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +40,50 @@ impl fmt::Display for Event {
 const MAX_LOG_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_RECORD_BYTES: usize = 8 * 1024;
 const MAX_MODULE_BYTES: usize = 512;
+static NEXT_TAIL: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TailRepair {
+    Unchanged,
+    CompletedRecord,
+    Quarantined { backup: PathBuf },
+}
+
+fn quarantine_tail(path: &Path, fragment: &[u8]) -> io::Result<PathBuf> {
+    let parent = path.parent().ok_or_else(|| io::Error::other("session file has no parent"))?;
+    for _ in 0..16 {
+        let mut name = path.file_name().ok_or_else(|| io::Error::other("session file has no name"))?.to_os_string();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+        let serial = NEXT_TAIL.fetch_add(1, Ordering::Relaxed);
+        name.push(format!(".torn-{}-{nonce}-{serial}.bak", std::process::id()));
+        let backup = parent.join(name);
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let mut output = match options.open(&backup) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        let write: io::Result<()> = (|| {
+            output.write_all(fragment)?;
+            output.sync_all()?;
+            #[cfg(unix)]
+            File::open(parent)?.sync_all()?;
+            Ok(())
+        })();
+        if let Err(error) = write {
+            let _ = fs::remove_file(&backup);
+            return Err(error);
+        }
+        return Ok(backup);
+    }
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, "unable to allocate a unique session tail backup"))
+}
 
 pub struct EventLog {
     path: PathBuf,
@@ -47,11 +93,14 @@ impl EventLog {
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let parent = path.parent().ok_or_else(|| io::Error::other("log path has no parent"))?;
-        fs::create_dir_all(parent)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        if !parent.exists() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                fs::DirBuilder::new().recursive(true).mode(0o700).create(parent)?;
+            }
+            #[cfg(not(unix))]
+            fs::create_dir_all(parent)?;
         }
         if let Ok(metadata) = fs::symlink_metadata(&path) {
             if !metadata.file_type().is_file() {
@@ -170,10 +219,8 @@ impl EventLog {
         Ok(lines)
     }
 
-    /// Explicitly discard only a final unterminated record after validating
-    /// that all preceding complete records remain valid. Never repairs a
-    /// completed malformed line or infers missing accounting data.
-    pub fn repair_partial_tail(&self) -> io::Result<bool> {
+    /// Preserve complete events and quarantine incomplete tails before truncation.
+    pub fn repair_tail(&self) -> io::Result<TailRepair> {
         let mut file = Self::open_file(&self.path)?;
         FileExt::lock_exclusive(&file)?;
         let result = (|| {
@@ -184,25 +231,38 @@ impl EventLog {
             file.seek(SeekFrom::Start(0))?;
             let mut bytes = Vec::new();
             file.read_to_end(&mut bytes)?;
-            if bytes.is_empty() || bytes.last() == Some(&b'\n') { return Ok(false); }
+            if bytes.is_empty() || bytes.last() == Some(&b'\n') { return Ok(TailRepair::Unchanged); }
             let prefix_end = bytes.iter().rposition(|byte| *byte == b'\n')
                 .map_or(0, |index| index + 1);
             if prefix_end != 0 {
-                // Exclude only the final terminator, not blank middle records.
                 for (index, line) in bytes[..prefix_end - 1].split(|byte| *byte == b'\n').enumerate() {
                     if line.len() + 1 > MAX_RECORD_BYTES || serde_json::from_slice::<Event>(line).is_err() {
                         return Err(io::Error::new(io::ErrorKind::InvalidData,
-                            format!("refusing to discard tail because preceding record {} is invalid", index + 1)));
+                            format!("refusing to modify tail because preceding record {} is invalid", index + 1)));
                     }
                 }
             }
+            let tail = &bytes[prefix_end..];
+            if tail.len() + 1 <= MAX_RECORD_BYTES && serde_json::from_slice::<Event>(tail).is_ok() {
+                if length == MAX_LOG_BYTES {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "cannot append record delimiter beyond log limit"));
+                }
+                file.write_all(b"\n")?;
+                file.sync_all()?;
+                return Ok(TailRepair::CompletedRecord);
+            }
+            let backup = quarantine_tail(&self.path, tail)?;
             file.set_len(prefix_end as u64)?;
             file.sync_all()?;
-            Ok(true)
+            Ok(TailRepair::Quarantined { backup })
         })();
         let unlocked = FileExt::unlock(&file);
         unlocked?;
         result
+    }
+
+    pub fn repair_partial_tail(&self) -> io::Result<bool> {
+        Ok(!matches!(self.repair_tail()?, TailRepair::Unchanged))
     }
 
 }
@@ -219,6 +279,18 @@ mod tests {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opening_log_does_not_change_existing_parent_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = std::env::temp_dir();
+        let before = fs::metadata(&parent).unwrap().permissions().mode();
+        let file = path("shared-parent");
+        let _log = EventLog::open(&file).unwrap();
+        assert_eq!(fs::metadata(&parent).unwrap().permissions().mode(), before);
+        let _ = fs::remove_file(file);
     }
 
     #[cfg(unix)]
@@ -300,10 +372,27 @@ mod recovery_tests {
         file.write_all(b"{\"type\":\"sav").unwrap();
         assert_eq!(log.totals().unwrap_err().kind(), io::ErrorKind::InvalidData);
         assert_eq!(log.append(event.clone()).unwrap_err().kind(), io::ErrorKind::InvalidData);
-        assert!(log.repair_partial_tail().unwrap());
+        let backup = match log.repair_tail().unwrap() {
+            TailRepair::Quarantined { backup } => backup,
+            other => panic!("expected quarantined tail, got {other:?}"),
+        };
+        assert_eq!(fs::read(&backup).unwrap(), b"{\"type\":\"sav");
         assert!(!log.repair_partial_tail().unwrap());
         log.append(event).unwrap();
         assert_eq!(log.totals().unwrap(), (4, 2));
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(backup);
+    }
+
+    #[test]
+    fn valid_unterminated_event_is_preserved() {
+        let path = std::env::temp_dir().join(format!("conduit-tail-valid-{}.jsonl", std::process::id()));
+        let log = EventLog::open(&path).unwrap();
+        let event = Event::Savings(Savings { module: "source".into(), raw_tokens: 11, presented_tokens: 7, measured: false });
+        fs::write(&path, serde_json::to_vec(&event).unwrap()).unwrap();
+        assert_eq!(log.repair_tail().unwrap(), TailRepair::CompletedRecord);
+        assert_eq!(log.totals().unwrap(), (11, 7));
+        assert_eq!(log.repair_tail().unwrap(), TailRepair::Unchanged);
         let _ = fs::remove_file(path);
     }
 
