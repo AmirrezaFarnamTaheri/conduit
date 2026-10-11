@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/store", "crates/scope"]
+members = [".", "crates/store", "crates/scope", "crates/lens"]
 resolver = "2"
 
 [package]
@@ -11,6 +11,7 @@ license = "Apache-2.0"
 [dependencies]
 conduit-store = { path = "crates/store" }
 conduit-scope = { path = "crates/scope" }
+conduit-lens = { path = "crates/lens" }
 
 [profile.release]
 strip = true

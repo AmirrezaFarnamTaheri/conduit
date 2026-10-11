@@ -1,9 +1,10 @@
 use conduit_scope::{Event, EventLog, Savings};
 use conduit_store::BlobStore;
+use conduit_lens::distill;
 use std::{env, fs, path::PathBuf, process};
 
 fn usage() -> ! {
-    eprintln!("usage: conduit <store|expand|record|replay|stats|bench> ...");
+    eprintln!("usage: conduit <run|store|expand|record|replay|stats|bench> ...");
     process::exit(2);
 }
 
@@ -14,6 +15,31 @@ fn root() -> PathBuf {
 fn main() {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
+        Some("run") => {
+            let mut command = args.next().unwrap_or_else(|| usage());
+            if command == "--" { command = args.next().unwrap_or_else(|| usage()); }
+            let command_args: Vec<String> = args.collect();
+            let output = std::process::Command::new(&command).args(&command_args).output().unwrap_or_else(|e| fail(e));
+            let mut raw = output.stdout;
+            raw.extend_from_slice(&output.stderr);
+            let raw_text = String::from_utf8_lossy(&raw);
+            let blob = BlobStore::open(root().join("blobs")).ok().and_then(|store| store.put(&raw).ok());
+            let result = std::panic::catch_unwind(|| distill(&raw_text, 700));
+            match result {
+                Ok(filtered) => {
+                    if filtered.dropped.is_empty() {
+                        print!("{}", filtered.presented);
+                    } else if let Some(blob) = blob {
+                        print!("{}", filtered.presented);
+                        println!("[conduit h={} shown={}/{}tok exit={} dropped='{}' expand='conduit expand {}']", blob.handle, filtered.presented_tokens, filtered.raw_tokens, output.status.code().unwrap_or(1), filtered.dropped.join(", "), blob.handle);
+                    } else {
+                        print!("{}", raw_text);
+                    }
+                }
+                Err(_) => print!("{}", raw_text),
+            }
+            std::process::exit(output.status.code().unwrap_or(1));
+        }
         Some("store") => {
             let text = args.next().unwrap_or_else(|| usage());
             let store = BlobStore::open(root().join("blobs")).unwrap_or_else(|e| fail(e));
