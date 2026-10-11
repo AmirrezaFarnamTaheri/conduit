@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/store", "crates/scope", "crates/lens", "crates/atlas", "crates/edit"]
+members = [".", "crates/store", "crates/scope", "crates/lens", "crates/atlas", "crates/edit", "crates/ledger", "crates/relay", "crates/guard", "crates/verify", "crates/vault"]
 resolver = "2"
 
 [package]
@@ -14,6 +14,11 @@ conduit-scope = { path = "crates/scope" }
 conduit-lens = { path = "crates/lens" }
 conduit-atlas = { path = "crates/atlas" }
 conduit-edit = { path = "crates/edit" }
+conduit-ledger = { path = "crates/ledger" }
+conduit-relay = { path = "crates/relay" }
+conduit-guard = { path = "crates/guard" }
+conduit-verify = { path = "crates/verify" }
+conduit-vault = { path = "crates/vault" }
 
 [profile.release]
 strip = true

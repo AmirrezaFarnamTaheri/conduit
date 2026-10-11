@@ -74,7 +74,14 @@ fn checked_path(workspace: &Path, relative: &Path) -> io::Result<PathBuf> {
 
 fn hash(bytes: &[u8]) -> String { let mut hasher = Hasher::new(); hasher.update(bytes); hasher.finalize().to_hex().to_string() }
 fn cleanup(staged: &[(PathBuf, PathBuf, PathBuf, String, String)]) { for (_, _, temp, _, _) in staged { let _ = fs::remove_file(temp); } }
-fn rollback(committed: &[(PathBuf, Vec<u8>)]) { for (path, old) in committed { let _ = fs::write(path, old); } }
+fn rollback(committed: &[(PathBuf, Vec<u8>)]) {
+    for (path, old) in committed {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+        let temp = path.with_extension(format!("conduit-rollback-{}-{}", std::process::id(), nonce));
+        if fs::write(&temp, old).is_ok() { let _ = fs::rename(&temp, path); }
+        let _ = fs::remove_file(&temp);
+    }
+}
 
 struct Lock { path: PathBuf }
 impl Lock { fn acquire(path: &Path) -> io::Result<Self> { fs::create_dir_all(path.parent().expect("lock path has parent"))?; fs::OpenOptions::new().write(true).create_new(path).open(path)?; Ok(Self { path: path.to_path_buf() }) } }
