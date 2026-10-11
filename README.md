@@ -1,89 +1,99 @@
 # Conduit
 
-Conduit is a local, agent-agnostic runtime for reducing coding-agent context and tool overhead without sacrificing recoverability. It keeps raw observations addressable, applies deterministic transformations first, and makes savings claims measurable rather than aspirational.
+Conduit is a **local coding-agent tool-output and source-navigation prototype**. It aims to minimize noisy tool output while preserving recoverable raw observations and content hashes for subsequent inspection and edits.
 
-## Status
+## Implementation status (source snapshot)
 
-The repository contains executable foundations for Phases 0–6:
+The CLI currently implements `run`, `find`, `peek`, `edit`, `batch-edit`, `store`, `expand`, `doctor`, `record`, `replay`, `stats`, `repair-session`, and `bench`. The independent `ledger`, `relay`, `guard`, `verify`, `vault`, `memory`, and `fanout` crates are **not wired into the CLI**, and their behavior is **not an execution security boundary**. No daemon, provider gateway, UI, MCP server, remote API, OS sandbox, verified multi-file crash transaction, or data-retention controller is supplied.
 
-- reversible BLAKE3 blob storage and append-only session accounting
-- fail-open command output lens with expansion handles
-- deterministic repository search with content hashes
-- hash-anchored, transactional edits with rollback and path protections
-- synchronized context ledger, hard budgets, loop guard, impact-aware verification, and policy profiles
-- provenance-bound memory and deterministic parallel fanout
-- cross-platform CI, dependency policy, threat model, and release gates
+The CLI launches local commands with the **same privileges and environment as the caller**. It does not enforce the `vault` policy module or isolate the child process. Run only trusted commands within an appropriately isolated operating-system account or managed sandbox. A timeout kills the direct child but cannot guarantee descendant process cleanup. The wrapper is not a PTY and does not preserve stdout/stderr temporal interleaving.
 
-The local container does not include Cargo. Rust compilation, stress/fuzz tests, and cross-platform verification run in GitHub Actions.
+## Build and checks
 
-## Quick start
+Requires a current stable Rust toolchain with Cargo and Python 3.12 for the evaluation harness:
 
 ```sh
-# Run the deterministic corpus benchmark
-python3 eval/benchmark.py
-
-# Run the release-input check
-python3 eval/release_gate.py
-
-# Build and test when Rust is installed
-cargo test --workspace --all-targets
 cargo fmt --all -- --check
+cargo test --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
+cargo build --bin conduit
+python3 -m unittest discover -s eval -p 'test_*.py'
+python3 eval/benchmark.py --binary target/debug/conduit
+python3 eval/release_gate.py
 ```
 
-## CLI
+The Python release-input check verifies only file presence and fixture sanity. The benchmark executes the **actual Rust CLI output-presentation path** (including recovery-hint overhead and a raw-expansion check) using deterministic fixtures. It counts **whitespace-separated words, not actual model tokens**, and is not evidence of successful agent tasks or production cost savings. The Rust toolchain was unavailable in the environment used to prepare the accompanying audit patch; compilation and cross-platform results must be established independently.
 
-Build the binary with Cargo, then use:
+## Commands
 
 ```sh
+# Default run: bounded output and timeout, but no compression
 conduit run -- cargo test
-conduit find "target symbol" 20
+# Explicitly reduce successful UTF-8 stdout if net positive with a valid blob handle
+conduit run --preset compact -- cargo test
+# Other presets: safe, quick, deep. Flags override preset settings if supplied afterwards.
+conduit run --preset quick --timeout-ms 10000 --max-output-bytes 1048576 -- command arg
+
+# Read-only search/inspection; find scans file-by-file without a full snapshot
+conduit find 'target symbol' 20
+conduit peek path/to/file.rs 10 40
+# Edits require the entire file's BLAKE3 hash obtained from find or peek
 conduit edit path/to/file.rs EXPECTED_HASH OLD NEW
-conduit store "raw text"
-conduit expand cx:o:HANDLE
-conduit record SESSION MODULE RAW_TOKENS PRESENTED_TOKENS
+# Multi-target hash-anchored preflight and best-effort commit from a JSON plan
+conduit batch-edit --check batch.json
+conduit batch-edit batch.json
+
+conduit store 'raw text'
+# Read binary or secret input from stdin instead of leaking it into argv
+producer_of_bytes | conduit store -
+conduit expand cx:o:OUTPUT_HANDLE
+conduit doctor             # verify blob integrity without deleting objects
+conduit record SESSION MODULE RAW_WORDS SHOWN_WORDS
 conduit replay SESSION
 conduit stats SESSION
-conduit bench
+conduit repair-session SESSION   # explicitly discard only an unterminated tail
+conduit bench eval/corpus/sample.log 700
 ```
 
-`run` preserves the child exit code. Raw output is stored before reduction when possible; reduced output includes an expansion handle whenever content was omitted. If storage or reduction fails, raw output is returned. `CONDUIT_HOME` controls session/blob state, and `CONDUIT_WORKSPACE` controls atlas and edit operations.
+`CONDUIT_HOME` selects local blob/session storage (default `.conduit`). `CONDUIT_WORKSPACE` selects the root for `find`, `peek`, `edit`, and `batch-edit`. Both should be protected by normal OS filesystem permissions. On Unix the store/session code attempts restrictive 0700/0600 modes; Windows ACL isolation is **not validated**. Expansion handles are identifiers, not authorization tokens; treat them as sensitive if the blob is sensitive.
 
-## Design principles
+`run` retains a bounded amount from stdout and stderr **independently**, drains the rest, returns an explicit incomplete-output error when either limit is exceeded, and returns `124` when the direct child times out. Such incomplete output is **not losslessly recoverable**. When successful stdout is reduced, the original stdout bytes are persisted first and a recovery handle is emitted to stderr. If storage fails or reduction has no net value after counting the recovery hint, stdout passes through unchanged. For non-successful child exits the program leaves stdout uncompressed; the effective exit status is propagated for ordinary exits, with platform limitations for signal termination. Stderr is never reduced.
 
-1. **Fail open:** Conduit must not become the reason an agent task fails.
-2. **Reversible by default:** omitted content remains retrievable until retention removes it.
-3. **Measured, not claimed:** reductions are reported with raw and presented counts.
-4. **Deterministic first:** parsing, hashing, policy, and selection do not require a model.
-5. **Stale data is unsafe:** file facts, search results, and edits carry hashes.
-6. **Least privilege:** paths, commands, and budgets are checked at boundaries.
-7. **Local first:** no provider or telemetry integration is enabled by default.
+`edit` and `batch-edit` refuse stale BLAKE3 hashes, duplicate canonical targets, escape paths, protected metadata paths, hardlinked targets, and edits over 8 MiB per file. A batch accepts 1–128 operations up to a combined 64 MiB of original and replacement text. `--check` performs the same validations but does not modify source files; it still creates the cooperative lock. The commit writes with per-file staging. It **does not** guarantee all-or-nothing multi-file transactions across crashes, concurrent writes from other tools, or power loss. See `docs/wiki/batch-edit.md` for a manifest example.
+
+Session records are bounded to 8 KiB each and session logs to 64 MiB. `stats` streams and validates records without materializing the history. If a crash interrupts a JSONL append, `record` and `stats` refuse to gloss over the incomplete tail. `repair-session` only discards the unterminated final fragment after verifying all preceding completed events; it cannot reconstruct missing data and must not be mistaken for an audit-log recovery guarantee. `doctor` provides an on-demand, read-only blob integrity scan; it does not perform retention or GC.
 
 ## Repository map
 
-| Path | Purpose |
-| --- | --- |
-| `crates/store` | Content-addressed raw blobs and expansion handles |
-| `crates/scope` | Append-only session events, replay, and accounting |
-| `crates/lens` | Deterministic output reduction |
-| `crates/atlas` | Snapshot search and hash-bearing hits |
-| `crates/edit` | Hash-anchored transaction edits |
-| `crates/ledger` | Context lifecycle and masking |
-| `crates/relay` | Hard token, cost, and wall-time budgets |
-| `crates/guard` | Repetition and failure-loop detection |
-| `crates/verify` | Impacted-test planning |
-| `crates/vault` | Command and workspace policy |
-| `crates/memory` | Provenance-bound facts |
-| `crates/fanout` | Bounded ordered parallel work |
-| `proto` | Wire-schema source of truth |
-| `eval` | Offline benchmark and release checks |
-| `specs` | Threat model and security constraints |
-| `docs` | Architecture, roadmap, and wiki |
+| Path | Responsibility | Current CLI integration |
+| --- | --- | --- |
+| `src/main.rs`, `src/run.rs` | CLI and bounded direct-child subprocess adapter | Yes |
+| `crates/store` | Integrity-checked content-addressed blobs | Yes |
+| `crates/scope` | Synchronized and bounded JSONL session events, explicit torn-tail repair | Yes |
+| `crates/lens` | Conservative diagnostic-preserving output reduction | Yes |
+| `crates/atlas` | File-by-file bounded search, optional snapshot API, and `peek` | Yes |
+| `crates/edit` | Shared edit preflight, typed batch manifests, staged edits and cooperative lock | Yes |
+| `crates/ledger` | In-memory context state | No |
+| `crates/relay` | Stateless authorization *calculation*, not enforcement | No |
+| `crates/guard` | In-memory action repetition guard | No |
+| `crates/verify` | Basic impacted-test selection | No |
+| `crates/vault` | String command policy prototype, not an OS sandbox | No |
+| `crates/memory` | In-memory hash-bound facts | No |
+| `crates/fanout` | Ordered worker fanout with unbounded channels | No |
+| `proto` | Design-only wire schema | No |
+| `eval` | Python harness and offline fixtures | CI/gate only |
+| `docs`, `specs` | Documentation and threat model | Documentation only |
 
-## Security
+## Operating and security limits
 
-Treat agent input, repository files, child-process output, and provider responses as untrusted. Review `specs/threat-model.md` before adding integrations. Do not commit credentials, raw secrets, or unreviewed policy changes. Report security issues privately to the project maintainers rather than publishing an exploit first.
+- **No untrusted command isolation:** unrestricted caller privileges; no sandbox enforcement or provider egress policy.
+- **No durable content-retention policy:** the local blob store can grow without garbage collection. Sensitive observations may persist even after a command finishes.
+- **No certified multi-file crash recovery:** stage/rename rollback is best-effort and protects only cooperative Conduit instances.
+- **No exact-token accounting:** `record` accepts caller-supplied numbers; `stats` reports sums of estimates or claims, including negative net savings, not verified model usage.
+- **No workload non-inferiority evidence:** no live-agent success/accuracy or production p95 performance comparisons have been supplied.
+
+See `specs/threat-model.md`, `docs/roadmap.md`, and the external due-diligence assessment before promoting this prototype to production use.
 
 ## License
 
-Apache-2.0. See `LICENSE` when distributed as a release artifact.
+Apache-2.0 in this source snapshot. Any external peer source or third-party dependency must have its actual license checked before redistributing copied code; design-pattern comparison alone does not establish a licensing grant.

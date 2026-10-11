@@ -6,11 +6,13 @@ Blob storage is content-addressed and deduplicated. Session logs are append-only
 
 ## Diagnostics
 
+Run `conduit doctor` to verify stored blob contents and identify unexpected shard entries. `doctor` reads object contents, so restrict access to authorized operators. It is read-only and neither deletes staging files nor races-freezes concurrently published objects. Run `conduit stats SESSION` to validate session accounting without building an in-memory list of all events. `repair-session SESSION` is explicitly destructive to a torn final record only; preserve a backup of a damaged log if forensic reconstruction matters.
+
 When behavior is unexpected, collect the command, profile, exit code, presented output, and handle—not secrets or the full raw blob by default. Confirm the workspace and `CONDUIT_HOME` values first. Re-run with the raw handle only when necessary.
 
 ## Recovery
 
-A missing or expired handle requires rerunning the command. A stale edit must be regenerated from a fresh atlas hit. A held edit lock should be investigated before removal; deleting it while another process is active can allow concurrent writes.
+A missing or expired handle requires rerunning the command. A stale edit must be regenerated from a fresh atlas hit. The edit lock is held by the OS for the process lifetime and released automatically on process exit; do not delete the file while edits are active because that could create separate lock inodes. For multi-file batches, an interrupted commit may leave a partially applied set: `batch-edit --check` does not constitute crash recovery. Preserve original files/backups and reconcile hashes before retrying. A torn session tail requires explicit `repair-session` after evidence preservation.
 
 ## Release checklist
 

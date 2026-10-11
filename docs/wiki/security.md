@@ -6,7 +6,7 @@ Agent requests, repository files, child-process output, and future provider resp
 
 ## Current controls
 
-- `vault` rejects unsupported commands, shell-evaluation markers, path traversal, and workspaces outside the selected root.
+- `vault` is a standalone policy evaluator, **not connected to `conduit run`**. Commands run with the caller's permissions; use a trusted operating-system sandbox for untrusted commands.
 - `edit` binds every write to a complete file hash and rejects symlink escapes.
 - `store` uses content hashes and does not accept arbitrary filesystem paths as handles.
 - `memory` refuses facts whose source hash changed.

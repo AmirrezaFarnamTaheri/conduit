@@ -16,4 +16,12 @@ Hardening pass:
 - Budget arithmetic saturates before comparison; fanout worker count is bounded and zero workers are safe.
 - No provider, network, mock, placeholder, or fabricated benchmark result was introduced.
 
-Verification completed here: Python benchmark, release metadata gate, Python compilation, and diff checks. Rust compilation, unit/stress/fuzz tests, cross-platform sandbox tests, live-agent non-inferiority, PTY ordering, and external security audit remain environment-dependent gates because Cargo and a registered SSH build server are unavailable.
+Verification completed here: Python unit tests, static release-input checks, Markdown links, and diff checks. Rust compilation, formatting, CLI-path benchmark, unit/stress/fuzz tests, cross-platform sandbox tests, live-agent non-inferiority, PTY ordering, and external security audit remain unverified because Cargo and a registered SSH build server are unavailable.
+
+## Supplied V3 patch evaluation (2026-10-11)
+
+The patch applies cleanly to this repository and improves bounded command capture, integrity-checked expansion, typed/locked session records, bounded source search, edit preflight, integration tests, and an executable-path benchmark. The benchmark requires a compiled Rust executable and was not run here.
+
+The companion report describes a candidate, not a certified release. Its claims about process-group cleanup, structured JSON CLI outputs, and `docs/wiki/structured-output.md` are not present in the supplied patch. Blob/session opens initially lacked the final-component no-follow guarantee attributed to them; Unix no-follow opens, private staging creation, and regression tests were added during integration. Parent-directory symlink races, external edit writers, cross-file crash atomicity, descendant containment, retention, and Windows ACL validation remain unresolved. `vault` is not connected to `run`, which executes with the caller's privileges. Benchmark units are whitespace-delimited words, not provider tokens.
+
+Do not promote this candidate to production or represent Phases 0–6 as accepted until native gates run and their results are reviewed.

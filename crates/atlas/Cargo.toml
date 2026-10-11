@@ -6,3 +6,4 @@ license = "Apache-2.0"
 
 [dependencies]
 blake3 = "1.5"
+ignore = "0.4"

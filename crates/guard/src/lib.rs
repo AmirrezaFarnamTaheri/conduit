@@ -8,9 +8,9 @@ pub struct Guard { fingerprints: VecDeque<String>, max_repeats: usize, consecuti
 impl Guard {
     pub fn new(max_repeats: usize, failure_limit: usize) -> Self { Self { fingerprints: VecDeque::new(), max_repeats, consecutive_failures: 0, failure_limit } }
     pub fn observe(&mut self, action: &str, succeeded: bool) -> Decision {
-        if succeeded { self.consecutive_failures = 0; } else { self.consecutive_failures += 1; }
+        if succeeded { self.consecutive_failures = 0; } else { self.consecutive_failures = self.consecutive_failures.saturating_add(1); }
         let mut hasher = Hasher::new(); hasher.update(action.as_bytes()); let fingerprint = hasher.finalize().to_hex().to_string();
-        self.fingerprints.push_back(fingerprint.clone()); if self.fingerprints.len() > self.max_repeats + 1 { self.fingerprints.pop_front(); }
+        self.fingerprints.push_back(fingerprint.clone()); if self.fingerprints.len() > self.max_repeats.saturating_add(1) { self.fingerprints.pop_front(); }
         let repeats = self.fingerprints.iter().filter(|item| item.as_str() == fingerprint).count();
         if repeats > self.max_repeats || self.consecutive_failures >= self.failure_limit { Decision::Halt } else { Decision::Continue }
     }
