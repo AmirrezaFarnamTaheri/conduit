@@ -1,5 +1,7 @@
 # Conduit revised roadmap
 
+This file is the short planning view. The maintained user and contributor documentation lives in [`wiki/`](wiki/README.md), especially [roadmap and acceptance](wiki/roadmap.md).
+
 ## Decisions that change the draft
 
 1. **Shrink the first milestone.** Phase 0 proves storage, replay, accounting, and deterministic benchmark mechanics before introducing gRPC, SQLite, PTYs, indexing, or provider APIs.
